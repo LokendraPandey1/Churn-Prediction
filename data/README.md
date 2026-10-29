@@ -1,24 +1,37 @@
-# Dataset setup
+# Supplied customer churn datasets
 
-The application expects a CSV based on the IBM Telco Customer Churn schema,
-including the 19 customer/service input columns and a `Churn` column containing
-`Yes` or `No`. It does not download data automatically.
+The application now uses the two CSV files supplied in this directory:
 
-IBM documents its Cognos Telco churn sample as fictional and distributes it as
-several Excel source files inside Cognos sample content. See IBM's
-[Telco customer churn sample documentation](https://www.ibm.com/docs/en/cognos-analytics/11.1.0?topic=samples-telco-customer-churn)
-for access and licensing details. Export and join the relevant source data into
-a CSV with the schema this project validates, or obtain the commonly used IBM
-Telco CSV from a source whose terms you have checked. Do not treat the
-fictional sample as real-world customer evidence.
+- `customer_churn_dataset-training-master.csv`
+- `customer_churn_dataset-testing-master.csv`
 
-Put the resulting file at `data/telco_churn.csv`, or set `CHURN_DATA_PATH` to an
-absolute or project-relative CSV path. To train against another filename:
+They use the same schema. The model inputs are `Age`, `Gender`, `Tenure`,
+`Usage Frequency`, `Support Calls`, `Payment Delay`, `Subscription Type`,
+`Contract Length`, `Total Spend`, and `Last Interaction`. `Churn` is a numeric
+0/1 target. `CustomerID` is excluded from all model inputs.
+
+The training file has one wholly blank row; the loader drops wholly blank rows
+and rejects partially populated rows with a missing target. The test file is
+used as the separate holdout evaluation set by default. `CustomerID` values
+overlap between the supplied files, but the records for shared IDs differ, so
+IDs are treated as file-local labels and are neither model features nor join
+keys.
+
+The dataset source and license were not included with the files. Check the
+provider's attribution and terms before redistribution or making claims about
+real-world customers. Results describe these supplied data only.
+
+The CSVs are excluded from Git. To use different files:
 
 ```powershell
-$env:CHURN_DATA_PATH = "C:\path\to\telco_churn.csv"
+$env:CHURN_DATA_PATH = "C:\path\to\training.csv"
+$env:CHURN_TEST_DATA_PATH = "C:\path\to\testing.csv"
+python -m src.eda
 python -m src.train
 ```
 
-The loader never fabricates rows or downloads an unverified dataset. Dataset
-records are excluded from Git by `.gitignore`.
+Or specify the paths directly:
+
+```powershell
+python -m src.train --data "C:\path\to\training.csv" --test-data "C:\path\to\testing.csv"
+```

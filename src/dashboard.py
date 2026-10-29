@@ -9,7 +9,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.data_loader import (
+    CATEGORICAL_COLUMNS,
     FEATURE_COLUMNS,
+    NUMERIC_COLUMNS,
     TARGET,
     default_data_path,
     load_dataset,
@@ -83,22 +85,22 @@ def _page_overview(frame: pd.DataFrame | None) -> None:
         )
         _chart(fig)
     with right:
-        rates = churn_rate_by(frame, "Contract")
+        rates = churn_rate_by(frame, "Contract Length")
         fig = px.bar(
             rates,
-            x="Contract",
+            x="Contract Length",
             y="churn_rate",
             color="churn_rate",
             color_continuous_scale="Teal",
             title="Observed churn rate by contract",
-            labels={"churn_rate": "Churn rate", "Contract": "Contract type"},
+            labels={"churn_rate": "Churn rate", "Contract Length": "Contract length"},
         )
         fig.update_yaxes(tickformat=".0%")
         _chart(fig)
-    tenure = churn_rate_by(frame, "tenure")
+    tenure = churn_rate_by(frame, "Tenure")
     fig = px.bar(
         tenure,
-        x="tenure",
+        x="Tenure",
         y="churn_rate",
         title="Observed churn rate by tenure band",
         labels={"tenure": "Tenure (months)", "churn_rate": "Churn rate"},
@@ -116,14 +118,14 @@ def _page_analytics(frame: pd.DataFrame | None) -> None:
     if frame is None:
         return
     st.caption("Filter the observed dataset. Segment churn rates are descriptive, not causal.")
-    filter_columns = ["Contract", "InternetService", "PaymentMethod"]
+    filter_columns = ["Contract Length", "Subscription Type", "Gender"]
     selections = {}
     for column in filter_columns:
         options = sorted(frame[column].dropna().astype(str).unique())
         selections[column] = st.multiselect(
             column, options, default=options, key=f"filter_{column}"
         )
-    observed_tenure = frame["tenure"].dropna()
+    observed_tenure = frame["Tenure"].dropna()
     if observed_tenure.empty:
         st.warning("Tenure is entirely missing; no tenure filter can be applied.")
         filtered = frame.copy()
@@ -136,14 +138,14 @@ def _page_analytics(frame: pd.DataFrame | None) -> None:
             max_value=maximum_tenure,
             value=(minimum_tenure, maximum_tenure),
         )
-        filtered = frame.loc[frame["tenure"].between(low, high)]
+        filtered = frame.loc[frame["Tenure"].between(low, high)]
     for column, selected in selections.items():
         filtered = filtered.loc[filtered[column].astype(str).isin(selected)]
     if filtered.empty:
         st.warning("No customers match these filters.")
         return
     rates_columns = st.columns(3)
-    for index, column in enumerate(["Contract", "InternetService", "PaymentMethod"]):
+    for index, column in enumerate(["Contract Length", "Subscription Type", "Gender"]):
         rates = churn_rate_by(filtered, column)
         fig = px.bar(
             rates,
@@ -161,7 +163,7 @@ def _page_analytics(frame: pd.DataFrame | None) -> None:
     with left:
         fig = px.histogram(
             filtered,
-            x="MonthlyCharges",
+            x="Total Spend",
             color=TARGET,
             barmode="overlay",
             opacity=0.72,
@@ -181,11 +183,11 @@ def _page_analytics(frame: pd.DataFrame | None) -> None:
         _chart(fig)
     st.subheader("Segment comparison")
     st.dataframe(
-        filtered.groupby(["Contract", "InternetService"], dropna=False)
+        filtered.groupby(["Contract Length", "Subscription Type"], dropna=False)
         .agg(
             customers=(TARGET, "size"),
-            churn_rate=(TARGET, lambda values: values.eq("Yes").mean()),
-            mean_monthly_charges=("MonthlyCharges", "mean"),
+            churn_rate=(TARGET, lambda values: values.eq(1).mean()),
+            mean_total_spend=("Total Spend", "mean"),
         )
         .reset_index()
         .sort_values("churn_rate", ascending=False),
@@ -220,13 +222,38 @@ def _page_performance(frame: pd.DataFrame | None) -> None:
             }
         )
     st.subheader("Training-only cross-validation")
-    st.dataframe(pd.DataFrame(cv_rows), use_container_width=True, hide_index=True)
+    test_rows = []
+    for model_name, scores in metrics.get("test_results", {}).items():
+        test_rows.append(
+            {
+                "Model": model_name,
+                **{
+                    f"{metric} (test)": scores[metric]
+                    for metric in ["precision", "recall", "f1", "roc_auc"]
+                },
+            }
+        )
+    cv_table = pd.DataFrame(cv_rows)
+    test_table = pd.DataFrame(test_rows)
+    if not test_table.empty:
+        cv_table = cv_table.merge(test_table, on="Model", how="left")
+    st.dataframe(cv_table, use_container_width=True, hide_index=True)
     st.caption(
         f"Selected by {metrics['selection_metric']}. "
         f"Model: {metrics['selected_model']}."
     )
     test = metrics["test_metrics"]
     st.subheader(f"Untouched test set ({test['test_rows']:,} rows)")
+    st.caption(f"Evaluation source: {metrics.get('test_source', 'recorded test set')}.")
+    cv_auc = metrics["cv_results"][metrics["selected_model"]]["roc_auc"]["mean"]
+    auc_gap = cv_auc - test["roc_auc"]
+    if auc_gap >= 0.10:
+        st.warning(
+            f"Generalization warning: selected-model CV ROC-AUC "
+            f"({cv_auc:.3f}) exceeds supplied test ROC-AUC ({test['roc_auc']:.3f}) "
+            f"by {auc_gap:.3f}. Investigate dataset construction and distribution "
+            "differences before relying on these predictions."
+        )
     score_columns = st.columns(4)
     for column, metric in zip(score_columns, ["precision", "recall", "f1", "roc_auc"]):
         column.metric(metric.replace("_", " ").title(), f"{test[metric]:.3f}")
@@ -318,28 +345,6 @@ def _page_prediction(frame: pd.DataFrame | None) -> None:
         step=0.05,
         help="This changes the displayed risk category only; it does not retrain the model.",
     )
-    enum_options = {
-        "gender": ["Female", "Male"],
-        "Partner": ["Yes", "No"],
-        "Dependents": ["Yes", "No"],
-        "PhoneService": ["Yes", "No"],
-        "MultipleLines": ["No", "Yes", "No phone service"],
-        "InternetService": ["DSL", "Fiber optic", "No"],
-        "OnlineSecurity": ["No", "Yes", "No internet service"],
-        "OnlineBackup": ["No", "Yes", "No internet service"],
-        "DeviceProtection": ["No", "Yes", "No internet service"],
-        "TechSupport": ["No", "Yes", "No internet service"],
-        "StreamingTV": ["No", "Yes", "No internet service"],
-        "StreamingMovies": ["No", "Yes", "No internet service"],
-        "Contract": ["Month-to-month", "One year", "Two year"],
-        "PaperlessBilling": ["Yes", "No"],
-        "PaymentMethod": [
-            "Electronic check",
-            "Mailed check",
-            "Bank transfer (automatic)",
-            "Credit card (automatic)",
-        ],
-    }
     if st.session_state.get("customer_prediction") is None:
         st.session_state["customer_prediction"] = None
     with st.form("customer_prediction_form"):
@@ -348,26 +353,30 @@ def _page_prediction(frame: pd.DataFrame | None) -> None:
         columns = st.columns(3)
         for index, column in enumerate(FEATURE_COLUMNS):
             with columns[index % 3]:
-                if column in enum_options:
-                    inputs[column] = st.selectbox(column, enum_options[column], key=f"input_{column}")
-                elif column == "SeniorCitizen":
-                    inputs[column] = st.selectbox(column, [0, 1], key="input_SeniorCitizen")
-                elif column == "tenure":
-                    observed = frame["tenure"].dropna() if frame is not None else pd.Series(dtype=float)
-                    max_tenure = int(observed.max()) if not observed.empty else 72
+                if column in CATEGORICAL_COLUMNS:
+                    options = (
+                        sorted(frame[column].dropna().astype(str).unique())
+                        if frame is not None
+                        else ["Unknown"]
+                    )
+                    inputs[column] = st.selectbox(column, options, key=f"input_{column}")
+                elif column in NUMERIC_COLUMNS:
+                    observed = (
+                        frame[column].dropna()
+                        if frame is not None
+                        else pd.Series(dtype=float)
+                    )
+                    maximum = float(observed.max()) if not observed.empty else 1000.0
+                    default = float(observed.median()) if not observed.empty else 0.0
                     inputs[column] = st.number_input(
-                        column, min_value=0, max_value=max(1, max_tenure), value=12
+                        column,
+                        min_value=0.0,
+                        max_value=max(1.0, maximum * 1.5),
+                        value=min(default, max(1.0, maximum * 1.5)),
+                        step=1.0,
                     )
                 else:
-                    maximum = (
-                        float(frame[column].max())
-                        if frame is not None and frame[column].notna().any()
-                        else 10000.0
-                    )
-                    inputs[column] = st.number_input(
-                        column, min_value=0.0, max_value=max(1.0, maximum * 1.5),
-                        value=min(maximum, 50.0),
-                    )
+                    raise ValueError(f"No prediction input widget is configured for '{column}'.")
         submitted = st.form_submit_button("Estimate churn risk", type="primary")
     if submitted:
         record = pd.DataFrame([inputs], columns=FEATURE_COLUMNS)
@@ -427,7 +436,7 @@ def _page_retention(frame: pd.DataFrame | None) -> None:
     st.title("Retention insights")
     if frame is None:
         return
-    overall_rate = frame[TARGET].eq("Yes").mean()
+    overall_rate = frame[TARGET].eq(1).mean()
     st.caption(
         "These suggestions describe observed associations. They do not prove that an "
         "intervention will prevent churn."

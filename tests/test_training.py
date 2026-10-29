@@ -17,3 +17,20 @@ def test_training_compares_models_and_saves_reloadable_artifacts(sample_data, tm
     assert load_model_bundle(artifact_path)["pipeline"] is not None
     saved = json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))
     assert saved["selected_model"] == result["selected_model"]
+
+
+def test_supplied_test_frame_is_used_as_untouched_holdout(sample_data, tmp_path):
+    result = train_and_evaluate(
+        sample_data,
+        tmp_path,
+        cv_folds=2,
+        test_frame=sample_data.iloc[:20].copy(),
+    )
+    assert result["test_source"] == "separate supplied testing CSV"
+    assert result["training_rows"] == len(sample_data)
+    assert result["test_metrics"]["test_rows"] == 20
+    assert set(result["test_results"]) == {
+        "Logistic Regression",
+        "Random Forest",
+        "Gradient Boosting",
+    }

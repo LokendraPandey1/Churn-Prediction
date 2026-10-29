@@ -6,19 +6,20 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data_loader import FEATURE_COLUMNS, TARGET, default_data_path, load_dataset
+from src.data_loader import FEATURE_COLUMNS, NUMERIC_COLUMNS, TARGET, default_data_path, load_dataset
 
 SEGMENT_COLUMNS = [
-    "Contract",
-    "tenure",
-    "InternetService",
-    "PaymentMethod",
-    "MonthlyCharges",
+    "Contract Length",
+    "Tenure",
+    "Subscription Type",
+    "Gender",
+    "Support Calls",
+    "Payment Delay",
 ]
 
 
 def churn_summary(frame: pd.DataFrame) -> dict:
-    churned = int(frame[TARGET].eq("Yes").sum())
+    churned = int(frame[TARGET].eq(1).sum())
     return {
         "shape": [int(frame.shape[0]), int(frame.shape[1])],
         "schema": {column: str(dtype) for column, dtype in frame.dtypes.items()},
@@ -27,8 +28,8 @@ def churn_summary(frame: pd.DataFrame) -> dict:
         "retained": int(len(frame) - churned),
         "churn_rate": float(churned / len(frame)),
         "class_distribution": {
-            "Yes": {"count": churned, "proportion": float(churned / len(frame))},
-            "No": {
+            "Churned": {"count": churned, "proportion": float(churned / len(frame))},
+            "Retained": {
                 "count": int(len(frame) - churned),
                 "proportion": float((len(frame) - churned) / len(frame)),
             },
@@ -67,10 +68,18 @@ def build_eda_report(frame: pd.DataFrame) -> dict:
 def churn_rate_by(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     if column not in SEGMENT_COLUMNS:
         raise ValueError(f"Unsupported churn segment: '{column}'.")
-    data = frame.assign(_churn=frame[TARGET].eq("Yes").astype(int))
-    if column in {"tenure", "MonthlyCharges"}:
-        labels = ["0-12", "13-24", "25-48", "49+"]
-        breaks = [0, 12, 24, 48, float("inf")]
+    data = frame.assign(_churn=frame[TARGET].eq(1).astype(int))
+    if column == "Tenure":
+        labels = ["1-12", "13-24", "25-36", "37-48", "49+"]
+        breaks = [0, 12, 24, 36, 48, float("inf")]
+        data[column] = pd.cut(data[column], bins=breaks, labels=labels, include_lowest=True)
+    elif column == "Payment Delay":
+        labels = ["0-5", "6-10", "11-20", "21-30", "31+"]
+        breaks = [-1, 5, 10, 20, 30, float("inf")]
+        data[column] = pd.cut(data[column], bins=breaks, labels=labels, include_lowest=True)
+    elif column == "Support Calls":
+        labels = ["0-2", "3-5", "6-8", "9+"]
+        breaks = [-1, 2, 5, 8, float("inf")]
         data[column] = pd.cut(data[column], bins=breaks, labels=labels, include_lowest=True)
     return (
         data.groupby(column, dropna=False, observed=False)["_churn"]
@@ -80,8 +89,8 @@ def churn_rate_by(frame: pd.DataFrame, column: str) -> pd.DataFrame:
 
 
 def numeric_correlations(frame: pd.DataFrame) -> pd.DataFrame:
-    numeric = frame.loc[:, ["SeniorCitizen", "tenure", "MonthlyCharges", "TotalCharges"]].copy()
-    numeric[TARGET] = frame[TARGET].eq("Yes").astype(int)
+    numeric = frame.loc[:, NUMERIC_COLUMNS].copy()
+    numeric[TARGET] = frame[TARGET].astype(int)
     return numeric.corr(numeric_only=True)
 
 

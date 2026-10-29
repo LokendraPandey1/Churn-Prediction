@@ -11,7 +11,7 @@ from src.preprocessing import build_preprocessor
 def fitted_pipeline(sample_data):
     frame = validate_dataset(sample_data)
     x = frame.loc[:, FEATURE_COLUMNS]
-    y = frame["Churn"].eq("Yes").astype(int)
+    y = frame["Churn"].astype(int)
     return Pipeline(
         [("preprocessor", build_preprocessor()), ("classifier", LogisticRegression(max_iter=500))]
     ).fit(x, y)
@@ -20,7 +20,7 @@ def fitted_pipeline(sample_data):
 def test_batch_scoring_preserves_records_and_adds_risk(sample_data, fitted_pipeline):
     source = sample_data.drop(columns=["Churn"])
     scored = predict_customers(source, fitted_pipeline, threshold=0.5)
-    assert "customerID" in scored
+    assert "CustomerID" in scored
     assert scored["churn_probability"].between(0, 1).all()
     assert set(scored["risk_category"]) <= {"High", "Low"}
     assert len(scored) == len(source)
@@ -33,7 +33,7 @@ def test_scoring_rejects_target_column(sample_data, fitted_pipeline):
 
 def test_scoring_rejects_missing_input(sample_data, fitted_pipeline):
     with pytest.raises(ValueError, match="Missing required columns"):
-        predict_customers(sample_data.drop(columns=["Churn", "Contract"]), fitted_pipeline)
+        predict_customers(sample_data.drop(columns=["Churn", "Contract Length"]), fitted_pipeline)
 
 
 def test_scoring_rejects_empty_batch(fitted_pipeline, feature_frame):

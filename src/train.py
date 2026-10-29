@@ -23,8 +23,10 @@ from sklearn.pipeline import Pipeline
 
 from src.data_loader import (
     FEATURE_COLUMNS,
+    NUMERIC_COLUMNS,
     TARGET,
     default_data_path,
+    default_test_data_path,
     get_features,
     load_dataset,
     validate_dataset,
@@ -42,7 +44,7 @@ def build_models() -> dict:
             max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE
         ),
         "Random Forest": RandomForestClassifier(
-            n_estimators=300,
+            n_estimators=100,
             min_samples_leaf=2,
             class_weight="balanced",
             random_state=RANDOM_STATE,
@@ -56,12 +58,13 @@ def train_and_evaluate(
     frame: pd.DataFrame,
     artifacts_dir: str | Path = "models",
     cv_folds: int = 5,
+    test_frame: pd.DataFrame | None = None,
 ) -> dict:
     if cv_folds < 2:
         raise ValueError("Cross-validation requires at least two folds.")
     validated = validate_dataset(frame, require_target=True)
     features = get_features(validated)
-    target = validated[TARGET].map({"No": 0, "Yes": 1})
+    target = validated[TARGET]
     counts = target.value_counts()
     if len(counts) != 2 or counts.min() < cv_folds:
         raise ValueError(
@@ -69,13 +72,21 @@ def train_and_evaluate(
             f"{cv_folds}-fold cross-validation; found {counts.to_dict()}."
         )
 
-    x_train, x_test, y_train, y_test = train_test_split(
-        features,
-        target,
-        test_size=0.2,
-        random_state=RANDOM_STATE,
-        stratify=target,
-    )
+    if test_frame is None:
+        x_train, x_test, y_train, y_test = train_test_split(
+            features,
+            target,
+            test_size=0.2,
+            random_state=RANDOM_STATE,
+            stratify=target,
+        )
+        test_source = "stratified 20% holdout from training CSV"
+    else:
+        validated_test = validate_dataset(test_frame, require_target=True)
+        x_train, y_train = features, target
+        x_test = get_features(validated_test)
+        y_test = validated_test[TARGET]
+        test_source = "separate supplied testing CSV"
     train_class_counts = y_train.value_counts()
     if len(train_class_counts) != 2 or train_class_counts.min() < cv_folds:
         raise ValueError(
@@ -115,26 +126,35 @@ def train_and_evaluate(
         key=lambda name: (cv_results[name]["roc_auc"]["mean"], cv_results[name]["recall"]["mean"]),
     )
     selected = fitted_models[selected_name]
-    probabilities = selected.predict_proba(x_test)[:, 1]
-    predictions = (probabilities >= DEFAULT_THRESHOLD).astype(int)
-    test_metrics = {
-        "precision": float(precision_score(y_test, predictions, zero_division=0)),
-        "recall": float(recall_score(y_test, predictions, zero_division=0)),
-        "f1": float(f1_score(y_test, predictions, zero_division=0)),
-        "roc_auc": float(roc_auc_score(y_test, probabilities)),
-        "threshold": DEFAULT_THRESHOLD,
-        "confusion_matrix": confusion_matrix(y_test, predictions, labels=[0, 1]).tolist(),
-        "classification_report": classification_report(
-            y_test, predictions, labels=[0, 1], target_names=["No churn", "Churn"],
-            output_dict=True, zero_division=0,
-        ),
-        "test_rows": int(len(y_test)),
-    }
-    false_positive_rate, true_positive_rate, _ = roc_curve(y_test, probabilities)
-    test_metrics["roc_curve"] = {
-        "false_positive_rate": false_positive_rate.tolist(),
-        "true_positive_rate": true_positive_rate.tolist(),
-    }
+    test_results = {}
+    for name, pipeline in fitted_models.items():
+        probabilities = pipeline.predict_proba(x_test)[:, 1]
+        predictions = (probabilities >= DEFAULT_THRESHOLD).astype(int)
+        false_positive_rate, true_positive_rate, _ = roc_curve(y_test, probabilities)
+        test_results[name] = {
+            "precision": float(precision_score(y_test, predictions, zero_division=0)),
+            "recall": float(recall_score(y_test, predictions, zero_division=0)),
+            "f1": float(f1_score(y_test, predictions, zero_division=0)),
+            "roc_auc": float(roc_auc_score(y_test, probabilities)),
+            "threshold": DEFAULT_THRESHOLD,
+            "confusion_matrix": confusion_matrix(
+                y_test, predictions, labels=[0, 1]
+            ).tolist(),
+            "classification_report": classification_report(
+                y_test,
+                predictions,
+                labels=[0, 1],
+                target_names=["No churn", "Churn"],
+                output_dict=True,
+                zero_division=0,
+            ),
+            "test_rows": int(len(y_test)),
+            "roc_curve": {
+                "false_positive_rate": false_positive_rate.tolist(),
+                "true_positive_rate": true_positive_rate.tolist(),
+            },
+        }
+    test_metrics = test_results[selected_name]
 
     global_importance = global_permutation_importance(
         selected, x_test, y_test, random_state=RANDOM_STATE
@@ -162,7 +182,11 @@ def train_and_evaluate(
         "random_state": RANDOM_STATE,
         "cv_folds": cv_folds,
         "training_rows": int(len(x_train)),
+        "test_source": test_source,
+        "training_churn_rate": float(y_train.mean()),
+        "test_churn_rate": float(y_test.mean()),
         "cv_results": cv_results,
+        "test_results": test_results,
         "test_metrics": test_metrics,
         "global_permutation_importance": global_importance,
         "tree_feature_importance": tree_importance,
@@ -170,7 +194,7 @@ def train_and_evaluate(
     }
     reference_values = {}
     for column in FEATURE_COLUMNS:
-        if column in {"SeniorCitizen", "tenure", "MonthlyCharges", "TotalCharges"}:
+        if column in NUMERIC_COLUMNS:
             reference_values[column] = x_train[column].median()
         else:
             modes = x_train[column].mode(dropna=True)
@@ -199,11 +223,15 @@ def train_and_evaluate(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train and evaluate customer churn models.")
     parser.add_argument("--data", type=Path, default=default_data_path())
+    parser.add_argument("--test-data", type=Path, default=default_test_data_path())
     parser.add_argument("--artifacts-dir", type=Path, default=Path("models"))
     parser.add_argument("--cv-folds", type=int, default=5)
     args = parser.parse_args()
     dataset = load_dataset(args.data)
-    results = train_and_evaluate(dataset, args.artifacts_dir, args.cv_folds)
+    test_data = load_dataset(args.test_data) if args.test_data.is_file() else None
+    results = train_and_evaluate(
+        dataset, args.artifacts_dir, args.cv_folds, test_frame=test_data
+    )
     print(json.dumps(results, indent=2))
 
 
